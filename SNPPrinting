@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""
+Goals:
+- Given a pileup file, Interval list, produce genotypes for the same.
+locus_name_chr_pos,A_COUNT,C_COUNT,G_COUNT,T_COUNT,N_COUNT,COVERAGE,call
+@author: monica manam 
+"""
+
+import argparse
+import gzip
+import logging
+import os.path
+import sys
+
+def init_logger(level, log_file_path):
+    """
+        Logging utility function for logging
+        program state
+        @param level: Flag for specifying the logging message type
+        @param log_file_path: Location of where the log file for outputting
+        log messages is.
+    """
+    logging.debug("Initializing Logger")
+    with open(log_file_path, 'w+') as f:
+        logging_basic_infor_format = '%(levelname)s:%(message)s at %(asctime)s'
+        date_format = '%m/%d/%Y %I:%M:%S %p'
+        logging.basicConfig(filename=log_file_path, format=logging_basic_infor_format, level=level,
+                            datefmt=date_format)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(level)
+        log_handler = logging.StreamHandler(sys.stdout)
+        log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        log_handler.setFormatter(log_formatter)
+        log_handler.setLevel(level)
+        root_logger.addHandler(log_handler)
+
+def parse_input_args(arguments):
+    """
+        Parses input arguments.
+        @param arguments: Input arguments from commandline
+        @return:
+            args.input: Input file
+            args.out: Target output file
+            args: Arguments from commandline
+    """
+    parser = argparse.ArgumentParser(add_help=True,
+                                     description='This script parses a pileup file to produce genotype files.')
+    parser.add_argument('pileup', help='Input Pileup file', type=str)
+    parser.add_argument('interval', help='Input interval file', type=str)
+
+    if len(arguments) < 2:
+        parser.print_help()
+        logging.error("Input Arguments Not Enough; Please See Usage Help")
+    args = parser.parse_args(arguments)
+    return args.pileup, args.interval,args
+
+def calculate_likely_genotype(coverage, list_of_counts ):
+    """
+    # Determining the likely genotype by using cut off coverage and min_base_pct_to_include_in_gt values
+    # First Count total coverage and compute allele_fractions for each base and compare to values in genotype_set table
+    # For example, for 'sequencing FP snps', total coverage > 10x and min_base_pct_to_include_in_gt > 5%
+    # If the min_base_pct_to_include_in_gt for any allele is greater than the value from db, call the allele
+    :return: genotype called at the locus
+    """
+    #@todo: Make the below args instead of seeting them here or querying from DB.
+    min_cvg_to_gt = 10
+    min_base_pct_to_include_in_gt = 0.5
+    likely_genotype = ''
+    if coverage < min_cvg_to_gt:
+        likely_genotype = 'N'
+    else :
+        for each_base in ('A', 'T', 'G', 'C'):
+            allele_fraction = list_of_counts[each_base]/coverage
+            if (allele_fraction < min_base_pct_to_include_in_gt):
+                pass
+            else:
+                likely_genotype = likely_genotype+each_base
+    return likely_genotype
+
+
+def main():
+    """
+    Input: Args with input files and cut off scores
+    :return: Output file with genotypes
+    """
+    log_level = logging.INFO
+    log_file = "logging_genotypingFromPileup.txt"
+    init_logger(log_level, log_file)
+
+    inputfile, intervalfile , args = parse_input_args(sys.argv[1:])
+    logging.info('Input pileup: %s' % inputfile)
+    # Check if inputfile exists
+    if not os.path.exists(inputfile):
+        msg = "Input file %s does not exist" % inputfile
+        logging.error(msg)
+        raise Exception(msg)
+
+    logging.info("Reading input files...")
+    count_lines=0
+    interval_dict = {}
+    try:
+        with open(intervalfile, 'rt') as g:
+            for line in g :
+                if line[0].isdigit():
+                    split_line = line.split("\t")
+                    chr= split_line[0]
+                    position1 = split_line[1]
+                    position2 = split_line[2] # Do we need this?
+                    locus_name = split_line[4].strip()
+                    interval_dict [chr+"_"+position1] = locus_name
+        logging.info("Done processing interval file")
+        print (interval_dict.items())
+    except Exception as e:
+        logging.error("Program failed due to unexpected error!")
+        # halt the program when an exception exists
+        raise Exception(e)
+
+    list_of_counts={}
+    try:
+        #Open with read-text mode
+        with open(inputfile, 'rt') as f:
+                for line in f:
+                    count_lines += 1
+                    line = line.strip()
+                    split_line = line.split()
+                    #Extracting the counts of alleles
+                    chr_position = split_line[0]+"_"+split_line[1]
+                    alle_string = split_line[3]
+                    a_count = alle_string.count('A')
+                    list_of_counts['A'] = a_count
+                    t_count = alle_string.count('T')
+                    list_of_counts['T'] = t_count
+                    g_count = alle_string.count('G')
+                    list_of_counts['G'] = g_count
+                    c_count = alle_string.count('C')
+                    list_of_counts['C'] = c_count
+                    coverage=a_count+t_count+g_count+c_count
+                    #Compare the position and extract the locus name from the interval file
+                    likely_genotype = calculate_likely_genotype(coverage,list_of_counts)
+                    for k,v in interval_dict.items():
+                        if k == chr_position:
+                            locus_chr_pos= v+"_"+chr_position
+                    #@todo: Write these to a file 
+                    print (locus_chr_pos+","+str(a_count)+",",str(t_count)+","+str(g_count)+",",str(c_count)+","+str(coverage)+","+str(likely_genotype))
+                logging.info("Done processing %d lines" % count_lines)
+    except Exception as e:
+        logging.error("Program failed due to unexpected error!")
+        # halt the program when an exception exists
+        raise Exception(e)
+
+
+if __name__ == "__main__":
+    main()
