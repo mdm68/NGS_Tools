@@ -1,0 +1,590 @@
+#!/usr/local/miniconda2/bin/python
+"""
+This code is used to get orders from any LIMS system and convert it into an HL7 message. It also uses HTTP POST to send and handle this request.
+It would also handle invalid orders and email the given contact apart from logging the error
+Author: (mdm68)
+INPUT: G##### ( CID/ ALL CIDS from SQ)
+
+OUTPUT:
+MSH|^~\&#|Hexalis12345||||201611031200+0100||OML^O21^OML_O21|MSG0001|P|2.8.2||||||UNICODE UTF-8||||||^https://hexalis.local/orders^URI
+SFT|Agfa Healthcare|1.2.3.4|Hexalis|421425FABC
+PID|1||STEVE023454TR^^^NHS^PI||Thacker^Eva||19790217||||25 Mint Street^^Twickenham^London^TW3 4AS^GBR^^^^^^^^^^^^M|||||||||||AsianOther^Asian Other^99ETH^^^^^^^^Filipino
+PRT||UP||EP^Entering Provider^HL70912|user1
+PRT||UP||OP^Ordering Provider^HL70912||||TestInstitution||||||14, Richardson Street^^Manchester^^M15 3SZ^GBR^^^^^^^^^^^^M
+PRT||UP||AT^Attending Provider^HL70912|^Henrick^Pat^J^II^Dr
+PRT||UP||PRI^Principal Result Interpreter^HL70912||||||||||23 Mint Street^^London^^TW3 4AS^GBR^^^^^^^^^^^^M
+ORC|NW|ORD31415^hexalis|||IP
+OBR|1|ORD31415^hexalis||75975-3^Chromosome 13+18+21 trisomy^LN|||20090217|||||||||||||||||||||||||||||||||||||||SEX^Determine sex^99OPT~FF^Report fetal fraction^99OPT
+OBX|1|NM|21612-7^Age^LN||30|a^year^UCUM|||||F|||20110217|||||||||||||||SCI
+OBX|2|NM|11884-4^Gestational age^LN||55|d^day^UCUM|||||F|||20110217|||||||||||||||SCI
+OBX|3|NM|29463-7^Body weight^LN||140.2|kg^kilogram^UCUM|||||F|||20110217|||||||||||||||SCI
+OBX|4|NM|3137-7^Body height^LN||160.2|cm^centimeter^UCUM|||||F|||20110217|||||||||||||||SCI
+OBX|5|NM|55281-0^Fetuses^LN||2|1^unit^UCUM|||||F|||20110217|||||||||||||||SCI
+OBX|6|EI|CHO^Chorionicity^99OBS||MO^Monochorionic^99CHO||||||F|||20110217|||||||||||||||SCI
+OBX|7|EI|47224-1^In vitro fertilization pregnancy^LN||Y^Yes^HL70136||||||F|||20110217|||||||||||||||SCI
+OBX|8|NM|68327-6^Age^LN||25|a^year^UCUM|||||F||||||||||||||||||SCI
+OBX|9|NM|58769-1^Trisomy 13 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+OBX|10|NM|58769-1^Trisomy 13 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+OBX|11|NM|43994-3^Trisomy 18 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+OBX|12|NM|43994-3^Trisomy 18 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+OBX|13|NM|43995-0^Trisomy 21 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+OBX|14|NM|43995-0^Trisomy 21 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
+SPM|1|S0821345||BLD^Whole blood^HL70487||||||||5^mL&milliliter&UCUM||Some test sample notes|||20010101||||||||||^Streck
+
+"""
+
+import logging.config
+import sys
+import pandas as pd
+from DatabaseUtils import ProfileDatabaseManager as pdbm
+import Utils
+from hl7apy.core import Message
+from datetime import datetime, date, timedelta
+import requests
+import smtplib
+from email.mime.text import MIMEText
+
+# Logger Settings
+logger = logging.getLogger(Utils.NIPT)
+logger.setLevel(logging.INFO)
+## Define our formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logHandler = logging.FileHandler('{:%Y-%m-%d}_NIPT_Order_Normal.log'.format(datetime.now()))
+logHandler.setLevel(logging.INFO)
+logHandler.setFormatter(formatter)
+
+errorLogHandler = logging.FileHandler('{:%Y-%m-%d}_NIPT_Order_Error.log'.format(datetime.now()))
+errorLogHandler.setLevel(logging.ERROR)
+errorLogHandler.setFormatter(formatter)
+
+logger.addHandler(logHandler)
+logger.addHandler(errorLogHandler)
+
+
+def getPatientsFromSQ(SQConn):
+    """
+    This function is primarily fetching data from Sunquest
+    :param SQConn:
+    :return: New orders from SUNQUEST
+    """
+    SQ_SCHEMA = pdbm.SQ_SCHEMA
+    SQConn.execute("""
+   SELECT DISTINCT 
+       S.PtNumber
+      ,O.GL_Order
+      ,c.GL_ORDX_Specimen as SpecimenID
+      ,spc.SMR_Container as CID
+      ,P.PtFirstName
+      ,S.OrderTimestamp
+      ,P.PtLastName
+      ,P.Birthdate
+      ,PC.PhysName
+      ,CAST(C.CollectTimestamp as date) as CollectionDate   
+      ,O.BatTstCode
+      ,R.Result
+      ,TestCode
+  FROM {0}.[sunquest].[GL_Order] O
+  join {0}.[sunquest].[GL_Collect] C on O.GL_ORDX_Collect=C.GL_ORDX_Collect
+  join {0}.[sunquest].[GL_Specimen] S  on C.GL_ORDX_Specimen=S.GL_ORDX_Specimen
+  join {0}.[sunquest].[GL_Test] T on  O.GL_ORDX_Order=T.GL_ORDX_Order
+  left join {0}.[sunquest].[GL_ResHist] R on T.GL_ORDX_Test=R.GL_ORDX_Test and R.CurrentResult = 1 --We dont want to get historic results but we want to see pending) 
+  join {0}.[sunquest].[GL_Patient] P on S.GL_Patient=P.GL_Patient
+  left outer join {0}.[sunquest].[MA_PhysCode] PC on S.OrderPhysIndex = PC.PhysIndex
+  join {0}.[sunquest].[SMR_PatientContainerXRef] SPC on SPC.GL_ORDX_Collect = C.GL_ORDX_Collect
+  left join [NIPT-stage].[dbo].[PendingSamples] PS on PS.Gl_Order = O.GL_Order
+  where BatTstCode = 'BWNIPT' 
+  and PS.Gl_Order is null 
+  and spc.SMR_Container in ('G#####')-- test CID so users dont accodentally pull in all teh test CIDs into WFM
+  """.format(SQ_SCHEMA))
+    # fetch results
+    patientOrdersFromSQ = pd.DataFrame(SQConn.fetchall())
+    if patientOrdersFromSQ.size > Utils.ZERO:
+        patientOrdersFromSQ.columns = [
+            'PtNumber', 'GL_Order', 'SpecimenID', 'CID', 'PtFirstName', 'OrderTimestamp', 'PtLastName', 'Birthdate',
+            'PhysName', 'CollectionDate', 'BatTstCode', 'Result', 'TestCode']
+    else:
+        logger.info(Utils.NO_NEW_ORDERS)
+        sys.exit()
+
+    return patientOrdersFromSQ
+
+
+def parsePatientData(patientMetaData):
+    """
+    This method simply parses all teh patient data from SQ and calls the HL7 message
+    creator apart from persisting data into NIPt DB for signout.
+    :param patientMetaData:
+    :return:
+    """
+    cidList = patientMetaData.CID.unique()
+    for cid in cidList:
+        cidDF = patientMetaData[(patientMetaData.CID == cid)]
+        glOrder = str(cidDF.GL_Order.unique()[Utils.ZERO])
+        ptNumber = cidDF.PtNumber.unique()[Utils.ZERO]
+        ptFirstName = str(cidDF.PtFirstName.unique()[Utils.ZERO])
+        ptLastname = str(cidDF.PtLastName.unique()[Utils.ZERO])
+        ptBirthdate = str(cidDF.Birthdate.unique()[Utils.ZERO])
+        collectionDate = str(cidDF.CollectionDate.unique()[Utils.ZERO].replace("-", ""))
+        physName = str(cidDF.PhysName.unique()[Utils.ZERO])
+
+        hl7message = createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF, collectionDate,
+                                      physName)
+        try:
+            response = requests.post(url=Utils.API_ENDPOINT, data=hl7message)
+            response.raise_for_status()
+            if b'ERR' in response.content:  # response is in BYTE format not STRING
+                error_message = response.content.decode("utf-8")
+                logger.error("Error Occurred for: " + cid + " " + error_message)
+                sendEmailToContact(cid, ptFirstName, ptLastname, error_message)
+            else:
+                logger.info(str(cid) + Utils.SUCCESS)
+                # Persist data into NIPT DB after successfully adding the sample into WFM.
+                # Get SCA here specifically for inserting into DB again.
+                ptSCADF = cidDF[(cidDF.TestCode == Utils.BNISCA)]
+                ptSCA = None
+                ScaOrdered = 0  # I am defaulting this to 0, Change it if needed.
+                try:
+                    ptSCA = ptSCADF.Result.values[Utils.ZERO].replace(";", "")
+                    if ptSCA.lower() == Utils.YES:
+                        ScaOrdered = 1
+                    else:
+                        ScaOrdered = 0
+                except Exception:
+                    logger.error(Utils.BNISCA_ERROR)
+
+                NIPTConn = None
+                # This block is for inserting the successful sample into NIPT DB as pending samples.
+                try:
+                    NIPTConn = pdbm.connectToNIPTDB()
+                except Exception as e:
+                    logger.error(e)
+                    sendConnectionErrorEmail()
+                with NIPTConn.cursor() as c:
+                    c.execute(
+                        """INSERT INTO [NIPT-stage].[dbo].[PendingSamples](PatientMrn,Cid,TimeStamp,ScaOrdered,Gl_Order) VALUES (%s, %s ,CURRENT_TIMESTAMP,%s,%s)""",
+                        (ptNumber, cid, ScaOrdered, glOrder))
+                    NIPTConn.commit()
+                    c.close()
+                    NIPTConn.close()
+        except requests.exceptions.RequestException as err:
+            # sendEmailToContact(cid,ptFirstName,ptLastname,error_message)
+            logger.error(Utils.INTERNAL_ERROR, err)
+        except requests.exceptions.HTTPError as errh:
+            logger.error(Utils.HTTP_ERROR, errh)
+        except requests.exceptions.ConnectionError as errc:
+            logger.error(Utils.CONNECTING_ERROR, errc)
+        except requests.exceptions.Timeout as errt:
+            logger.error(Utils.TIMEOUT_ERROR, errt)
+
+
+def calculateAge(born):
+    today = date.today()
+    try:
+        birthday = born.replace(year=today.year)
+        # raised when birth date is February 29 and the current year is not a leap year
+    except Exception:
+        birthday = born.replace(year=today.year,
+                                month=born.month + Utils.initial_counter, day=Utils.initial_counter)
+    if birthday > today:
+        return today.year - born.year - Utils.initial_counter
+    else:
+        return today.year - born.year
+
+def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF, collectionDate, physName):
+    """
+    This method will create the HL7 message from the data received from Sunquest apart from some
+    custom data elements that the workflow manager requires.
+    See DHF-002-DOU-101_01_Yourgene HL7 Interface Specification.pdf
+    :param patient:
+    :return: HL7 Message with new order information
+    """
+    # Maternal Age
+    maternalAgeInyears = calculateAge(
+        date(int(ptBirthdate.split("-")[Utils.ZERO]), int(ptBirthdate.split("-")[Utils.initial_counter]),
+             int(ptBirthdate.split("-")[Utils.second_index])))
+    # Gestational Age
+    gestational_age = None
+    ptEDDDF = cidDF[(cidDF.TestCode == Utils.BNIPDD)]
+    try:
+        eddDate = ptEDDDF.Result.values[Utils.ZERO]
+        if eddDate is not None :
+          eddDate = eddDate.replace(";", "")
+          year = int(eddDate[:Utils.fourth_index])
+          month = int(eddDate[Utils.fourth_index:-Utils.second_index])
+          dateD = int(eddDate[-Utils.second_index:])
+          ymd_date = date(year, month, dateD)  # EDD in a particular format for LMD calculation
+          lmd_date = ymd_date - timedelta(days=Utils.DAYS)  # Last Menstrual date (LMD) = EDD - days(280)
+          gestational_age = abs((date.today() - lmd_date).days)  # gestational age = Current date - LMD
+        else:
+          raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " + Utils.BNIPDD_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPDD_ERROR)
+
+    # Height
+    try:
+        ptHtDF = cidDF[(cidDF.TestCode == Utils.BNIPHT)]
+        if ptHtDF.Result.values[Utils.ZERO] is not None:
+          ptHeight = ptHtDF.Result.values[Utils.ZERO].replace(";", "")
+        else:
+          raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
+    # Weight
+    try:
+        ptWtDF = cidDF[(cidDF.TestCode == Utils.BNIPWT)]
+        if ptWtDF.Result.values[Utils.ZERO] is not None:
+          ptWeight = ptWtDF.Result.values[Utils.ZERO].replace(";", "")
+        else:
+          raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPWT_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPWT_ERROR)
+        pass
+    # Fetuses
+    try:
+        fetusesDF = cidDF[(cidDF.TestCode == Utils.BNIPPT)]
+        if fetusesDF is not None:
+          ptNoFetus = fetusesDF.Result.values[Utils.ZERO].replace(";", "")
+          if ptNoFetus.lower() == Utils.TWINS:
+              noOfFetus = Utils.TWO
+          else:
+              noOfFetus = Utils.ONE
+        else:
+          raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPPT_ERROR)
+        pass
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPPT_ERROR)
+        pass
+    # IVF
+    try:
+        ptIVFDF = cidDF[(cidDF.TestCode == Utils.BNIPIV)]
+        if ptIVFDF is not None:
+            ptIVF = ptIVFDF.Result.values[Utils.ZERO].replace(";", "")
+            if ptIVF.lower() == Utils.YES:
+                ivfValue = Utils.Y
+            else:
+                ivfValue = Utils.N
+        else:
+            raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPIV_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPIV_ERROR)
+
+    # Donor age
+    try:
+        ptIVFDonorAgeDF = cidDF[(cidDF.TestCode == Utils.BNIPD)]
+        if ptIVFDonorAgeDF is not None:
+            ptIVFDonorAge = str(ptIVFDonorAgeDF.Result.values[Utils.ZERO].replace(";", ""))
+            if ptIVFDonorAge.lower() == Utils.HIDE:  # When IVF is not chosen, IVF donor age is hidden & Outputs "HIDE" as the result
+                ptIVFDonorAge = Utils.ZERO
+        else:
+            raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPD_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BBNIPD_ERROR)
+
+    # Chorionicity
+    try:
+        ptChorionicityDF = cidDF[(cidDF.TestCode == Utils.BNIPC)]
+        if ptChorionicityDF is not None:
+            ptChorionicity = ptChorionicityDF.Result.values[Utils.ZERO].replace(";", "")
+            if ptChorionicity.lower() == Utils.UNKNOWN:
+                value = Utils.NOT_KNOWN
+            elif ptChorionicity in (Utils.MONOCHORIONIC_TEXT):
+                value = Utils.MONOCHORIONIC
+            else:
+                value = Utils.DICHORIONIC
+        else:
+            raise AttributeError
+    except AttributeError:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
+    # SCA
+    ptSCADF = cidDF[(cidDF.TestCode == Utils.BNISCA)]
+    ptSCA = None
+    try:
+        ptSCA = ptSCADF.Result.values[Utils.ZERO].replace(";", "")
+    except Exception:
+        logger.error("Error Occurred for: " + cid + " " +Utils.BNISCA_ERROR)
+
+    # Phys name
+    try:
+        phyFirstName = str(physName.split(",")[Utils.ZERO].replace(";", ""))
+        subName = physName.split(",")[Utils.initial_counter]
+        phyLastName = subName.split(" ")[Utils.ZERO].replace(";", "")
+        initial = subName.split(" ")[Utils.initial_counter]
+    except Exception:
+        phyFirstName = phyFirstName if 'phyFirstName' in locals() else Utils.UNKNOWN
+        subName = subName if 'subName' in locals() else Utils.UNKNOWN
+        phyLastName = phyLastName if 'phyLastName' in locals() else Utils.UNKNOWN
+        initial = initial if 'initial' in locals() else Utils.UNKNOWN
+
+    # HL7 OML_O21 Message
+    m = Message(Utils.OML_O21, version=Utils.OML_VERSION)
+    list = []
+    m = Message(Utils.OML_O21, version=Utils.OML_VERSION)
+    m.msh.msh_2 = Utils.HL7_SPECIAL_CHARS
+    m.msh.msh_3 = Utils.SUNQUEST
+    m.msh.msh_4 = Utils.BWH
+    m.msh.msh_5 = Utils.ATLAS_WM
+    m.msh.msh_6 = Utils.YOURGENE
+    m.msh.msh_9 = Utils.OML_ALL
+    m.msh.msh_10 = Utils.UNIQUE_MESSAGE_ID  # check this? Message control ID (unique message ID allocated by sending system)
+    m.msh.msh_11 = Utils.P
+    m.msh.msh_12 = Utils.OML_VERSION
+    m.msh.msh_18 = Utils.UNICODE_UTF
+    m.msh.msh_24.msh_24_1 = ""
+    m.msh.msh_24.msh_24_2 = Utils.API_ENDPOINT
+    m.msh.msh_24.msh_24_3 = Utils.URI
+    list.append(m.msh.value)
+
+    # SFT Segment
+    m.sft.sft_1 = Utils.YOURGENE
+    m.sft.sft_2 = Utils.SFT_VERSION
+    m.sft.sft_3 = Utils.SUNQUEST
+    m.sft.sft_4 = Utils.NA
+    list.append(m.sft.value)
+
+    # PID
+    m.pid.pid_1 = Utils.patient_counter
+    m.pid.pid_3.pid_3_1 = str(ptNumber)
+    m.pid.pid_3.pid_3_5 = Utils.PI
+    m.pid.pid_5.pid_5_1 = ptFirstName
+    m.pid.pid_5.pid_5_2 = ptLastname
+    m.pid.pid_7 = ptBirthdate.replace('-', '')
+    # address is "R" but we dont have that in the order, so NA
+    m.pid.pid_11.pid_11_1 = Utils.NOT_SPECIFIED
+    m.pid.pid_11.pid_11_5 = Utils.NOT_SPECIFIED
+    m.pid.pid_11.pid_11_6 = Utils.NOT_SPECIFIED
+    m.pid.pid_11.pid_11_18 = Utils.MAILING
+    m.pid.pid_22.pid_22_1 = Utils.NOT_SPECIFIED
+    m.pid.pid_22.pid_22_3 = Utils.NineNineETH
+    m.pid.pid_22.pid_22_11 = Utils.NA
+    list.append(m.pid.value)
+
+    # PRT
+    m.prt.prt_2 = Utils.UPDATE
+    m.prt.prt_4.prt_4_1 = Utils.EP
+    m.prt.prt_4.prt_4_2 = Utils.ENTERING_PROVIDER
+    m.prt.prt_4.prt_4_3 = Utils.HL70912
+    m.prt.prt_5 = Utils.FLEX_USER  # Username of LIS system user ?
+    list.append(m.prt.value)
+    m.prt.prt_2 = Utils.UPDATE
+    m.prt.prt_4.prt_4_1 = Utils.OP
+    m.prt.prt_4.prt_4_2 = Utils.ORDERING_PROVIDER
+    m.prt.prt_4.prt_4_3 = Utils.HL70912
+    m.prt.prt_5 = ""
+    m.prt.prt_8 = Utils.BWH
+    m.prt.prt_14.prt_14_1 = Utils.NA  # Physician Info
+    m.prt.prt_14.prt_14_3 = Utils.NA
+    m.prt.prt_14.prt_14_5 = Utils.NA
+    m.prt.prt_14.prt_14_6 = Utils.USA
+    m.prt.prt_14.prt_14_18 = Utils.MAILING
+    list.append(m.prt.value)
+    m.prt.prt_2 = Utils.UPDATE
+    m.prt.prt_4.prt_4_1 = Utils.AT
+    m.prt.prt_4.prt_4_2 = Utils.ATTENDING_PROVIDER
+    m.prt.prt_4.prt_4_3 = Utils.HL70912
+    m.prt.prt_5.prt_5_2 = str(phyFirstName)
+    m.prt.prt_5.prt_5_3 = str(phyLastName)
+    m.prt.prt_5.prt_5_4 = str(initial)
+    m.prt.prt_5.prt_5_5 = Utils.NA
+    m.prt.prt_5.prt_5_6 = Utils.DR
+    list.append(m.prt.value)
+    m.prt.prt_2 = Utils.UPDATE
+    m.prt.prt_4.prt_4_1 = Utils.PRI
+    m.prt.prt_4.prt_4_2 = Utils.PRI_DESC
+    m.prt.prt_4.prt_4_3 = Utils.HL70912
+    m.prt.prt_14.prt_14_1 = Utils.NA  # Physician Info
+    m.prt.prt_14.prt_14_3 = Utils.NA
+    m.prt.prt_14.prt_14_5 = Utils.NA
+    m.prt.prt_14.prt_14_6 = Utils.USA
+    m.prt.prt_14.prt_14_18 = Utils.MAILING
+    list.append(m.prt.value)
+
+    # ORC
+    m.orc.orc_1 = Utils.New_Order
+    m.orc.orc_2.orc_2_1 = cid
+    m.orc.orc_2.orc_2_2 = Utils.SUNQUEST
+    m.orc.orc_3 = Utils.SUNQUEST
+    m.orc.orc_4 = Utils.SUNQUEST
+    m.orc.orc_5 = Utils.SUNQUEST
+    list.append(m.orc.value)
+
+    # OBR
+    m.obr.obr_1 = Utils.patient_counter
+    m.obr.obr_2.obr_2_1 = cid
+    m.obr.obr_2.obr_2_2 = Utils.SUNQUEST
+    m.obr.obr_4.obr_4_1 = Utils.OBR_41
+    m.obr.obr_4.obr_4_2 = Utils.TRISOMY
+    m.obr.obr_4.obr_4_3 = Utils.LN
+    m.obr.obr_7 = str(collectionDate)
+    # Disable only Sex determination
+    m.obr.obr_49 = Utils.OBR_49  # The spec says this component is 46, but errors - it has to be 49.
+    list.append(m.obr.value)
+
+    # OBX
+
+    initial_id = Utils.initial_counter
+
+    for i in range(len(Utils.obx_3_list)):
+        # Utils.initial_counter,2,3 components
+        m.obx.obx_1 = str(initial_id)
+        m.obx.obx_2 = Utils.NM
+        m.obx.obx_3.obx_3_1 = str(Utils.obx_3_list[i])
+        m.obx.obx_3.obx_3_2 = Utils.obx_3_2_list[i]
+        if str(Utils.obx_3_list[i]) in (Utils.OBX_IVF):
+            m.obx.obx_2 = Utils.EI
+            m.obx.obx_5.obx_5_1 = Utils.Y
+            m.obx.obx_5.obx_5_2 = Utils.YES
+            m.obx.obx_5.obx_5_3 = Utils.HL70136
+        if str(Utils.obx_3_list[i]) in (Utils.CHO):
+            m.obx.obx_3.obx_3_3 = Utils.OBS99
+            m.obx.obx_2 = Utils.EI
+        else:
+            m.obx.obx_3.obx_3_3 = Utils.LN
+        if (Utils.obx_3_list[i] in (Utils.obx_3_list[Utils.ZERO])):
+            m.obx.obx_5 = str(maternalAgeInyears)
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[Utils.initial_counter])):
+            m.obx.obx_5 = str(gestational_age)
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[2])):
+            m.obx.obx_5 = str(ptWeight)
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[3])):
+            m.obx.obx_5 = str(ptHeight)
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[4])):
+            m.obx.obx_5 = noOfFetus
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[5])):
+            m.obx.obx_5 = value + "^" + str(ptChorionicity) + Utils.CHO_CONCAT
+        elif (Utils.obx_3_list[i] in (Utils.obx_3_list[6])):
+            m.obx.obx_5 = ivfValue + "^" + str(ptIVF) + Utils.HL70136_CONCAT
+
+        # 6
+        if (Utils.obx_3_list[i] not in (Utils.CHO, Utils.OBX_IVF)):
+            m.obx.obx_6.obx_6_1 = Utils.obx_6_1_list[i]
+            m.obx.obx_6.obx_6_2 = Utils.obx_6_2_list[i]
+            m.obx.obx_6.obx_6_3 = Utils.UCUM
+        else:
+            # If this is not set, the above values will be set - which we dont want.
+            m.obx.obx_6.obx_6_1 = ""
+            m.obx.obx_6.obx_6_2 = ""
+            m.obx.obx_6.obx_6_3 = ""
+
+        # rest
+        m.obx.obx_11 = Utils.FINAL
+        m.obx.obx_14 = str(collectionDate)  # Date of blood draw
+        m.obx.obx_29 = Utils.SCI
+        initial_id = initial_id + Utils.initial_counter
+
+        list.append(m.obx.value)
+    # Setting the IVF Donor age only if provided.
+    if "Y" in ivfValue:
+        m.obx.obx_1 = Utils.EIGHTH_COMPONENT
+        m.obx.obx_2 = Utils.NM
+        m.obx.obx_3.obx_3_1 = str(Utils.OBX_31)
+        m.obx.obx_3.obx_3_2 = Utils.AGE
+        m.obx.obx_3.obx_3_3 = Utils.LN
+        m.obx.obx_5 = str(ptIVFDonorAge)
+        m.obx.obx_6.obx_6_1 = Utils.A
+        m.obx.obx_6.obx_6_2 = Utils.YEAR
+        m.obx.obx_6.obx_6_3 = Utils.UCUM
+        m.obx.obx_11 = Utils.FINAL
+        m.obx.obx_29 = Utils.SCI
+        list.append(m.obx.value)
+
+    # PLUGIN
+    m.obx.obx_1 = Utils.FIFTEENTH_COMPONENT
+    m.obx.obx_2 = Utils.EI
+    m.obx.obx_3.obx_3_1 = Utils.SCA_MODULE
+    m.obx.obx_3.obx_3_2 = Utils.REPORTING_SCA
+    m.obx.obx_3.obx_3_3 = Utils.PPV
+    m.obx.obx_5 = Utils.SCA_5
+    m.obx.obx_11 = Utils.FINAL
+    m.obx.obx_29 = Utils.SCI
+    list.append(m.obx.value)
+
+    # SPR Segment
+    m.spm.spm_1 = Utils.patient_counter
+    m.spm.spm_2 = cid
+    m.spm.spm_4.spm_4_1 = Utils.SPM_4_1
+    m.spm.spm_4.spm_4_3 = Utils.SPM_4_3
+    m.spm.spm_12 = Utils.SPM_12
+    m.spm.spm_14 = ""
+    m.spm.spm_17 = str(collectionDate)
+    m.spm.spm_27.spm_27_2 = Utils.STREK_TUBE
+    list.append(m.spm.value)
+
+    # A very Hacky way of introducing ~ into the HL7 message. WFM wouldn't convert  \R\ into ~.
+    newHl7List = []
+    for item in list:
+        new_item = item.replace(Utils.TILDE, Utils.UNICODE_TILDE)
+        newHl7List.append(new_item)
+    print ('\n'.join(newHl7List)) # If you like to look at the HL7 for debugging.
+    return ('\r'.join(newHl7List))
+
+
+def sendEmailToContact(cid, ptFirstName, ptLastname, error_message):
+    """
+    :param cid: Container ID - Unique
+    :param ptFirstName:
+    :param ptLastname:
+    :param error_message:
+    :return: None
+    """
+    s = smtplib.SMTP('smtp.partners.org')
+    contactEmail = "test@dfci.harvard.edu"
+    emailMessage = "NIPT order failed for " + ptFirstName + "," + ptLastname + " CID# " + cid + \
+                   " Please see the error received from Yourgene Workflow Manager" + "\n\n\n" + error_message
+    msg = MIMEText(emailMessage)
+    sender = 'test@dfci.harvard.edu'
+    recipients = [contactEmail]
+    msg['Subject'] = "NIPT Order Fail Notification"
+    msg['From'] = sender
+    msg['To'] = ", ".join(recipients)
+    s.sendmail(sender, recipients, msg.as_string())
+    s.quit()
+
+
+def sendConnectionErrorEmail():
+    """
+    :return: None
+    """
+    s = smtplib.SMTP('smtp.partners.org')
+    contactEmail = "test@dfci.harvard.edu"
+    emailMessage = 'This is a SQL Connection ERROR notification for the NIPT Order Creation' \
+                   '(https://gitlab.partners.org/BWH_Path_Informatics/bwh_nipt_ordering).' \
+                   ' See today_date.NIPT_Order_Error.log for more information'
+    msg = MIMEText(emailMessage)
+    sender = 'test@dfci.harvard.edu'
+    recipients = [contactEmail]
+    msg['Subject'] = "NIPT Order Fail Notification"
+    msg['From'] = sender
+    msg['To'] = ", ".join(recipients)
+    s.sendmail(sender, recipients, msg.as_string())
+    s.quit()
+
+
+def main():
+    # Set up DB connections & Call functions
+    SQConn = None
+    try:
+        SQConn = pdbm.connectToSQDB()
+    except Exception as e:
+        logger.error(e)
+        sendConnectionErrorEmail()
+    if SQConn is not None:
+        patientMetaData = getPatientsFromSQ(SQConn)
+        parsePatientData(patientMetaData)
+
+
+if __name__ == '__main__':
+    main()
