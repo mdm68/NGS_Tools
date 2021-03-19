@@ -2,35 +2,17 @@
 """
 This code is used to get orders from any LIMS system and convert it into an HL7 message. It also uses HTTP POST to send and handle this request.
 It would also handle invalid orders and email the given contact apart from logging the error
-Author: (mdm68)
-INPUT: G##### ( CID/ ALL CIDS from SQ)
-
+Author: Monica Manam for NIPT 
+INPUT: GIDs from LIMS
 OUTPUT:
 MSH|^~\&#|Hexalis12345||||201611031200+0100||OML^O21^OML_O21|MSG0001|P|2.8.2||||||UNICODE UTF-8||||||^https://hexalis.local/orders^URI
 SFT|Agfa Healthcare|1.2.3.4|Hexalis|421425FABC
 PID|1||STEVE023454TR^^^NHS^PI||Thacker^Eva||19790217||||25 Mint Street^^Twickenham^London^TW3 4AS^GBR^^^^^^^^^^^^M|||||||||||AsianOther^Asian Other^99ETH^^^^^^^^Filipino
 PRT||UP||EP^Entering Provider^HL70912|user1
-PRT||UP||OP^Ordering Provider^HL70912||||TestInstitution||||||14, Richardson Street^^Manchester^^M15 3SZ^GBR^^^^^^^^^^^^M
-PRT||UP||AT^Attending Provider^HL70912|^Henrick^Pat^J^II^Dr
-PRT||UP||PRI^Principal Result Interpreter^HL70912||||||||||23 Mint Street^^London^^TW3 4AS^GBR^^^^^^^^^^^^M
 ORC|NW|ORD31415^hexalis|||IP
 OBR|1|ORD31415^hexalis||75975-3^Chromosome 13+18+21 trisomy^LN|||20090217|||||||||||||||||||||||||||||||||||||||SEX^Determine sex^99OPT~FF^Report fetal fraction^99OPT
 OBX|1|NM|21612-7^Age^LN||30|a^year^UCUM|||||F|||20110217|||||||||||||||SCI
-OBX|2|NM|11884-4^Gestational age^LN||55|d^day^UCUM|||||F|||20110217|||||||||||||||SCI
-OBX|3|NM|29463-7^Body weight^LN||140.2|kg^kilogram^UCUM|||||F|||20110217|||||||||||||||SCI
-OBX|4|NM|3137-7^Body height^LN||160.2|cm^centimeter^UCUM|||||F|||20110217|||||||||||||||SCI
-OBX|5|NM|55281-0^Fetuses^LN||2|1^unit^UCUM|||||F|||20110217|||||||||||||||SCI
-OBX|6|EI|CHO^Chorionicity^99OBS||MO^Monochorionic^99CHO||||||F|||20110217|||||||||||||||SCI
-OBX|7|EI|47224-1^In vitro fertilization pregnancy^LN||Y^Yes^HL70136||||||F|||20110217|||||||||||||||SCI
-OBX|8|NM|68327-6^Age^LN||25|a^year^UCUM|||||F||||||||||||||||||SCI
-OBX|9|NM|58769-1^Trisomy 13 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
-OBX|10|NM|58769-1^Trisomy 13 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
-OBX|11|NM|43994-3^Trisomy 18 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
-OBX|12|NM|43994-3^Trisomy 18 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
-OBX|13|NM|43995-0^Trisomy 21 risk^LN|Twin 1^1|1234.5|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
-OBX|14|NM|43995-0^Trisomy 21 risk^LN|Twin 2^2|2345.6|1/1{risk}^inverse risk^UCUM|||||F||||||||||||||||||SCI
 SPM|1|S0821345||BLD^Whole blood^HL70487||||||||5^mL&milliliter&UCUM||Some test sample notes|||20010101||||||||||^Streck
-
 """
 
 import logging.config
@@ -52,11 +34,9 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 logHandler = logging.FileHandler('{:%Y-%m-%d}_NIPT_Order_Normal.log'.format(datetime.now()))
 logHandler.setLevel(logging.INFO)
 logHandler.setFormatter(formatter)
-
 errorLogHandler = logging.FileHandler('{:%Y-%m-%d}_NIPT_Order_Error.log'.format(datetime.now()))
 errorLogHandler.setLevel(logging.ERROR)
 errorLogHandler.setFormatter(formatter)
-
 logger.addHandler(logHandler)
 logger.addHandler(errorLogHandler)
 
@@ -105,7 +85,6 @@ def getPatientsFromSQ(SQConn):
     else:
         logger.info(Utils.NO_NEW_ORDERS)
         sys.exit()
-
     return patientOrdersFromSQ
 
 
@@ -205,6 +184,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     # Calculate Gestational Age based on EDD
     gestational_age = None
     ptEDDDF = cidDF[(cidDF.TestCode == Utils.BNIPDD)]
+    #Fetch Expected due date from the order 
     try:
         eddDate = ptEDDDF.Result.values[Utils.ZERO]
         if eddDate is not None :
@@ -222,7 +202,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPDD_ERROR)
 
-    # Setting Height
+    # Setting Height from the order
     try:
         ptHtDF = cidDF[(cidDF.TestCode == Utils.BNIPHT)]
         if ptHtDF.Result.values[Utils.ZERO] is not None:
@@ -233,7 +213,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
-    # Setting Weight
+    # Setting Weight from the order
     try:
         ptWtDF = cidDF[(cidDF.TestCode == Utils.BNIPWT)]
         if ptWtDF.Result.values[Utils.ZERO] is not None:
@@ -245,7 +225,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPWT_ERROR)
         pass
-    # Setting #of Fetuses
+    # Setting #of Fetuses from the order
     try:
         fetusesDF = cidDF[(cidDF.TestCode == Utils.BNIPPT)]
         if fetusesDF is not None:
@@ -262,7 +242,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPPT_ERROR)
         pass
-    # Setting IVF status
+    # Setting IVF status. from the order
     try:
         ptIVFDF = cidDF[(cidDF.TestCode == Utils.BNIPIV)]
         if ptIVFDF is not None:
@@ -292,7 +272,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BBNIPD_ERROR)
 
-    # Setting Chorionicity
+    # Setting Chorionicity from the order
     try:
         ptChorionicityDF = cidDF[(cidDF.TestCode == Utils.BNIPC)]
         if ptChorionicityDF is not None:
@@ -309,7 +289,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
-    # setting SCA
+    # setting SCA from the order
     ptSCADF = cidDF[(cidDF.TestCode == Utils.BNISCA)]
     ptSCA = None
     try:
@@ -317,7 +297,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNISCA_ERROR)
 
-    # setting Phys name
+    # setting Phys name from the order
     try:
         phyFirstName = str(physName.split(",")[Utils.ZERO].replace(";", ""))
         subName = physName.split(",")[Utils.initial_counter]
@@ -348,14 +328,14 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.msh.msh_24.msh_24_3 = Utils.URI
     list.append(m.msh.value)
 
-    # SFT Segment
+    # SFT/Software Segment
     m.sft.sft_1 = Utils.YOURGENE
     m.sft.sft_2 = Utils.SFT_VERSION
     m.sft.sft_3 = Utils.SUNQUEST
     m.sft.sft_4 = Utils.NA
     list.append(m.sft.value)
 
-    # PID Segment
+    # PID/Patient Identification Segment
     m.pid.pid_1 = Utils.patient_counter
     m.pid.pid_3.pid_3_1 = str(ptNumber)
     m.pid.pid_3.pid_3_5 = Utils.PI
@@ -372,13 +352,15 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.pid.pid_22.pid_22_11 = Utils.NA
     list.append(m.pid.value)
 
-    # PRT Segment
+    # PRT/Participation Information Segment
     m.prt.prt_2 = Utils.UPDATE
     m.prt.prt_4.prt_4_1 = Utils.EP
     m.prt.prt_4.prt_4_2 = Utils.ENTERING_PROVIDER
     m.prt.prt_4.prt_4_3 = Utils.HL70912
-    m.prt.prt_5 = Utils.FLEX_USER  # Username of LIS system user ?
+    m.prt.prt_5 = Utils.FLEX_USER  # Username of LIS system user
     list.append(m.prt.value)
+    
+    #ORDERING_PROVIDER info 
     m.prt.prt_2 = Utils.UPDATE
     m.prt.prt_4.prt_4_1 = Utils.OP
     m.prt.prt_4.prt_4_2 = Utils.ORDERING_PROVIDER
@@ -391,6 +373,8 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.prt.prt_14.prt_14_6 = Utils.USA
     m.prt.prt_14.prt_14_18 = Utils.MAILING
     list.append(m.prt.value)
+    
+    #Attending provider info 
     m.prt.prt_2 = Utils.UPDATE
     m.prt.prt_4.prt_4_1 = Utils.AT
     m.prt.prt_4.prt_4_2 = Utils.ATTENDING_PROVIDER
@@ -401,18 +385,20 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.prt.prt_5.prt_5_5 = Utils.NA
     m.prt.prt_5.prt_5_6 = Utils.DR
     list.append(m.prt.value)
+    
+    # Physician Info
     m.prt.prt_2 = Utils.UPDATE
     m.prt.prt_4.prt_4_1 = Utils.PRI
     m.prt.prt_4.prt_4_2 = Utils.PRI_DESC
     m.prt.prt_4.prt_4_3 = Utils.HL70912
-    m.prt.prt_14.prt_14_1 = Utils.NA  # Physician Info
+    m.prt.prt_14.prt_14_1 = Utils.NA  
     m.prt.prt_14.prt_14_3 = Utils.NA
     m.prt.prt_14.prt_14_5 = Utils.NA
     m.prt.prt_14.prt_14_6 = Utils.USA
     m.prt.prt_14.prt_14_18 = Utils.MAILING
     list.append(m.prt.value)
 
-    # ORC Segment
+    # ORC/Common Order Segment
     m.orc.orc_1 = Utils.New_Order
     m.orc.orc_2.orc_2_1 = cid
     m.orc.orc_2.orc_2_2 = Utils.SUNQUEST
@@ -421,7 +407,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.orc.orc_5 = Utils.SUNQUEST
     list.append(m.orc.value)
 
-    # OBR Segment
+    # OBR/Observation Request Segment
     m.obr.obr_1 = Utils.patient_counter
     m.obr.obr_2.obr_2_1 = cid
     m.obr.obr_2.obr_2_2 = Utils.SUNQUEST
@@ -430,10 +416,11 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.obr.obr_4.obr_4_3 = Utils.LN
     m.obr.obr_7 = str(collectionDate)
     # Disable only Sex determination
-    m.obr.obr_49 = Utils.OBR_49  # The spec says this component is 46, but errors - it has to be 49.
+    # The spec says this component is 46, but errors - it has to be 49.
+    m.obr.obr_49 = Utils.OBR_49  
     list.append(m.obr.value)
 
-    # OBX Segment : Following the Spec document & also the HL7 messaging components
+    # OBX/Observation/Result Segment : Following the Spec document & also the HL7 messaging components
     initial_id = Utils.initial_counter
     for i in range(len(Utils.obx_3_list)):
         # Utils.initial_counter,2,3 components
