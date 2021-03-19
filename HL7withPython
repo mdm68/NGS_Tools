@@ -198,11 +198,11 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     :param patient:
     :return: HL7 Message with new order information
     """
-    # Maternal Age
+    # calculate Maternal Age based on DOB
     maternalAgeInyears = calculateAge(
         date(int(ptBirthdate.split("-")[Utils.ZERO]), int(ptBirthdate.split("-")[Utils.initial_counter]),
              int(ptBirthdate.split("-")[Utils.second_index])))
-    # Gestational Age
+    # Calculate Gestational Age based on EDD
     gestational_age = None
     ptEDDDF = cidDF[(cidDF.TestCode == Utils.BNIPDD)]
     try:
@@ -222,7 +222,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPDD_ERROR)
 
-    # Height
+    # Setting Height
     try:
         ptHtDF = cidDF[(cidDF.TestCode == Utils.BNIPHT)]
         if ptHtDF.Result.values[Utils.ZERO] is not None:
@@ -233,7 +233,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPHT_ERROR)
-    # Weight
+    # Setting Weight
     try:
         ptWtDF = cidDF[(cidDF.TestCode == Utils.BNIPWT)]
         if ptWtDF.Result.values[Utils.ZERO] is not None:
@@ -245,7 +245,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPWT_ERROR)
         pass
-    # Fetuses
+    # Setting #of Fetuses
     try:
         fetusesDF = cidDF[(cidDF.TestCode == Utils.BNIPPT)]
         if fetusesDF is not None:
@@ -262,7 +262,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPPT_ERROR)
         pass
-    # IVF
+    # Setting IVF status
     try:
         ptIVFDF = cidDF[(cidDF.TestCode == Utils.BNIPIV)]
         if ptIVFDF is not None:
@@ -278,12 +278,12 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPIV_ERROR)
 
-    # Donor age
+    # Setting Donor age, When IVF is not chosen, IVF donor age is hidden & Outputs "HIDE" as the result
     try:
         ptIVFDonorAgeDF = cidDF[(cidDF.TestCode == Utils.BNIPD)]
         if ptIVFDonorAgeDF is not None:
             ptIVFDonorAge = str(ptIVFDonorAgeDF.Result.values[Utils.ZERO].replace(";", ""))
-            if ptIVFDonorAge.lower() == Utils.HIDE:  # When IVF is not chosen, IVF donor age is hidden & Outputs "HIDE" as the result
+            if ptIVFDonorAge.lower() == Utils.HIDE:  
                 ptIVFDonorAge = Utils.ZERO
         else:
             raise AttributeError
@@ -292,7 +292,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BBNIPD_ERROR)
 
-    # Chorionicity
+    # Setting Chorionicity
     try:
         ptChorionicityDF = cidDF[(cidDF.TestCode == Utils.BNIPC)]
         if ptChorionicityDF is not None:
@@ -309,7 +309,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNIPC_ERROR)
-    # SCA
+    # setting SCA
     ptSCADF = cidDF[(cidDF.TestCode == Utils.BNISCA)]
     ptSCA = None
     try:
@@ -317,7 +317,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     except Exception:
         logger.error("Error Occurred for: " + cid + " " +Utils.BNISCA_ERROR)
 
-    # Phys name
+    # setting Phys name
     try:
         phyFirstName = str(physName.split(",")[Utils.ZERO].replace(";", ""))
         subName = physName.split(",")[Utils.initial_counter]
@@ -329,7 +329,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         phyLastName = phyLastName if 'phyLastName' in locals() else Utils.UNKNOWN
         initial = initial if 'initial' in locals() else Utils.UNKNOWN
 
-    # HL7 OML_O21 Message
+    # Creating the actual HL7 OML_O21 Message
     m = Message(Utils.OML_O21, version=Utils.OML_VERSION)
     list = []
     m = Message(Utils.OML_O21, version=Utils.OML_VERSION)
@@ -355,7 +355,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.sft.sft_4 = Utils.NA
     list.append(m.sft.value)
 
-    # PID
+    # PID Segment
     m.pid.pid_1 = Utils.patient_counter
     m.pid.pid_3.pid_3_1 = str(ptNumber)
     m.pid.pid_3.pid_3_5 = Utils.PI
@@ -372,7 +372,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.pid.pid_22.pid_22_11 = Utils.NA
     list.append(m.pid.value)
 
-    # PRT
+    # PRT Segment
     m.prt.prt_2 = Utils.UPDATE
     m.prt.prt_4.prt_4_1 = Utils.EP
     m.prt.prt_4.prt_4_2 = Utils.ENTERING_PROVIDER
@@ -412,7 +412,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.prt.prt_14.prt_14_18 = Utils.MAILING
     list.append(m.prt.value)
 
-    # ORC
+    # ORC Segment
     m.orc.orc_1 = Utils.New_Order
     m.orc.orc_2.orc_2_1 = cid
     m.orc.orc_2.orc_2_2 = Utils.SUNQUEST
@@ -421,7 +421,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.orc.orc_5 = Utils.SUNQUEST
     list.append(m.orc.value)
 
-    # OBR
+    # OBR Segment
     m.obr.obr_1 = Utils.patient_counter
     m.obr.obr_2.obr_2_1 = cid
     m.obr.obr_2.obr_2_2 = Utils.SUNQUEST
@@ -433,10 +433,8 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     m.obr.obr_49 = Utils.OBR_49  # The spec says this component is 46, but errors - it has to be 49.
     list.append(m.obr.value)
 
-    # OBX
-
+    # OBX Segment : Following the Spec document & also the HL7 messaging components
     initial_id = Utils.initial_counter
-
     for i in range(len(Utils.obx_3_list)):
         # Utils.initial_counter,2,3 components
         m.obx.obx_1 = str(initial_id)
@@ -468,7 +466,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         elif (Utils.obx_3_list[i] in (Utils.obx_3_list[6])):
             m.obx.obx_5 = ivfValue + "^" + str(ptIVF) + Utils.HL70136_CONCAT
 
-        # 6
+        # Segment for OBX 6
         if (Utils.obx_3_list[i] not in (Utils.CHO, Utils.OBX_IVF)):
             m.obx.obx_6.obx_6_1 = Utils.obx_6_1_list[i]
             m.obx.obx_6.obx_6_2 = Utils.obx_6_2_list[i]
@@ -479,7 +477,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
             m.obx.obx_6.obx_6_2 = ""
             m.obx.obx_6.obx_6_3 = ""
 
-        # rest
+        # rest of the components 
         m.obx.obx_11 = Utils.FINAL
         m.obx.obx_14 = str(collectionDate)  # Date of blood draw
         m.obx.obx_29 = Utils.SCI
@@ -501,7 +499,7 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
         m.obx.obx_29 = Utils.SCI
         list.append(m.obx.value)
 
-    # PLUGIN
+    # any custom PLUGIN
     m.obx.obx_1 = Utils.FIFTEENTH_COMPONENT
     m.obx.obx_2 = Utils.EI
     m.obx.obx_3.obx_3_1 = Utils.SCA_MODULE
@@ -528,13 +526,14 @@ def createHL7Message(cid, ptNumber, ptFirstName, ptLastname, ptBirthdate, cidDF,
     for item in list:
         new_item = item.replace(Utils.TILDE, Utils.UNICODE_TILDE)
         newHl7List.append(new_item)
-    print ('\n'.join(newHl7List)) # If you like to look at the HL7 for debugging.
+    # If you like to look at the HL7.
+    #print ('\n'.join(newHl7List)) 
     return ('\r'.join(newHl7List))
 
 
 def sendEmailToContact(cid, ptFirstName, ptLastname, error_message):
     """
-    :param cid: Container ID - Unique
+    :param cid: Container ID - Unique: Send an error notification if the order fails 
     :param ptFirstName:
     :param ptLastname:
     :param error_message:
@@ -556,6 +555,7 @@ def sendEmailToContact(cid, ptFirstName, ptLastname, error_message):
 
 def sendConnectionErrorEmail():
     """
+    Send a seperate email, if there is a DB connection error 
     :return: None
     """
     s = smtplib.SMTP('smtp.partners.org')
