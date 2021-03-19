@@ -157,6 +157,9 @@ def parsePatientData(patientMetaData):
 
 
 def calculateAge(born):
+    """
+    this module is used to calculate the age of a patient based on the date of birth from a given order in EPIC.
+    """
     today = date.today()
     try:
         birthday = born.replace(year=today.year)
