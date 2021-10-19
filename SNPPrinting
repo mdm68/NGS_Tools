@@ -1,151 +1,216 @@
 #!/usr/bin/env python3
 """
 Goals:
-- Given a pileup file, Interval list, produce genotypes for the same.
-locus_name_chr_pos,A_COUNT,C_COUNT,G_COUNT,T_COUNT,N_COUNT,COVERAGE,call
-@author: monica manam 
+Given genotype files, produce a concordance metric.
+Out of the 45 SNPs compared Counts>= 38 : Concordant, 34-37: Indeterminate,
+<=33: Discordant
+Author : Monica D Manam
 """
 
-import argparse
-import gzip
-import logging
-import os.path
 import sys
+import argparse
+import logging
+import pandas as pd
+import os
 
-def init_logger(level, log_file_path):
-    """
-        Logging utility function for logging
-        program state
+from itertools import combinations
+
+# Declare constants
+GENOTYPES_TO_COMPARE = 2
+CONCORDANT_THRESHOLD = 38
+INDETERMINATE_THRESHOLD_MIN = 34
+INDETERMINATE_THRESHOLD_MAX = 37
+GENOTYPE_CALL_COL_IDX = 7
+
+
+def init_logger(level):
+    """Logging utility function for logging program state
+        
         @param level: Flag for specifying the logging message type
-        @param log_file_path: Location of where the log file for outputting
-        log messages is.
+
     """
     logging.debug("Initializing Logger")
-    with open(log_file_path, 'w+') as f:
-        logging_basic_infor_format = '%(levelname)s:%(message)s at %(asctime)s'
-        date_format = '%m/%d/%Y %I:%M:%S %p'
-        logging.basicConfig(filename=log_file_path, format=logging_basic_infor_format, level=level,
-                            datefmt=date_format)
-        root_logger = logging.getLogger()
-        root_logger.setLevel(level)
-        log_handler = logging.StreamHandler(sys.stdout)
-        log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        log_handler.setFormatter(log_formatter)
-        log_handler.setLevel(level)
-        root_logger.addHandler(log_handler)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    log_handler = logging.StreamHandler(sys.stdout)
+    log_formatter = logging.Formatter('%(asctime)s - %(name)s - '
+                                      '%(levelname)s - %(message)s')
+    log_handler.setFormatter(log_formatter)
+    log_handler.setLevel(level)
+    root_logger.addHandler(log_handler)
+
 
 def parse_input_args(arguments):
-    """
-        Parses input arguments.
-        @param arguments: Input arguments from commandline
-        @return:
-            args.input: Input file
-            args.out: Target output file
-            args: Arguments from commandline
+    """Parses input arguments.
+
     """
     parser = argparse.ArgumentParser(add_help=True,
-                                     description='This script parses a pileup file to produce genotype files.')
-    parser.add_argument('pileup', help='Input Pileup file', type=str)
-    parser.add_argument('interval', help='Input interval file', type=str)
+                                     description='This script will compare any'
+                                                 'given genotype files '
+                                                 'and produce concordance '
+                                                 'metrics')
+    parser.add_argument('-i', '--input', required=True,
+                        action='append',
+                        help='One or more .genotypes file names. '
+                             'Repeat this arg N times for N files', type=str)
+    parser.add_argument('-o', '--output', required=True,
+                        help='Output files location (path to an output directory)', type=str)
 
-    if len(arguments) < 2:
-        parser.print_help()
-        logging.error("Input Arguments Not Enough; Please See Usage Help")
     args = parser.parse_args(arguments)
-    return args.pileup, args.interval,args
+    return args
 
-def calculate_likely_genotype(coverage, list_of_counts ):
+
+
+def get_genotype_call_column_names_and_validate_header(file_name1, file2_name2):
     """
-    # Determining the likely genotype by using cut off coverage and min_base_pct_to_include_in_gt values
-    # First Count total coverage and compute allele_fractions for each base and compare to values in genotype_set table
-    # For example, for 'sequencing FP snps', total coverage > 10x and min_base_pct_to_include_in_gt > 5%
-    # If the min_base_pct_to_include_in_gt for any allele is greater than the value from db, call the allele
-    :return: genotype called at the locus
+    Returns the column names found on column position GENOTYPE_CALL_COL_IDX
+    in each file.
+
+    :param file_name1:
+    :param file2_name2:
+    :return:
     """
-    #@todo: Make the below args instead of seeting them here or querying from DB.
-    min_cvg_to_gt = 10
-    min_base_pct_to_include_in_gt = 0.5
-    likely_genotype = ''
-    if coverage < min_cvg_to_gt:
-        likely_genotype = 'N'
-    else :
-        for each_base in ('A', 'T', 'G', 'C'):
-            allele_fraction = list_of_counts[each_base]/coverage
-            if (allele_fraction < min_base_pct_to_include_in_gt):
-                pass
+    sample1_df = pd.read_csv(file_name1, sep='\t')
+    sample2_df = pd.read_csv(file2_name2, sep='\t')
+    # validate that the header has the expected length and format:
+    expected_header_length = GENOTYPE_CALL_COL_IDX + 1
+    if len(sample1_df.columns) != expected_header_length:
+        raise Exception("Input data error. Expected a header with %d columns" % expected_header_length)
+    expected_first_part_of_header = ['locus_name_chr_pos', 'A_COUNT', 'C_COUNT', 'G_COUNT',
+                                     'T_COUNT', 'N_COUNT', 'COVERAGE']
+    if str(list(sample1_df.columns[0:7])) != str(expected_first_part_of_header):
+        raise Exception("Input data error. Expected the first %d columns to have these "
+                        "names: %s" % (expected_header_length-1, expected_first_part_of_header))
+    # get the genotype header
+    sample1_genotype_column_name = sample1_df.columns[GENOTYPE_CALL_COL_IDX]
+    sample2_genotype_column_name = sample2_df.columns[GENOTYPE_CALL_COL_IDX]
+    return sample1_genotype_column_name, sample2_genotype_column_name
+
+
+def process_data(list_of_genotype_file_names, output_location):
+    """Takes in the list of genotypes and compares them in pair wise mode.
+
+    Outputs a general concordance file
+    """
+   # Check if the input is exactly 2 or more than 2. Combinations will work with > 2 only.
+    if len(list_of_genotype_file_names) > 2 :
+        all_combinations = [",".join(map(str, comb)) for comb in combinations(list_of_genotype_file_names, GENOTYPES_TO_COMPARE)]
+    else:
+        all_combinations = [",".join(list_of_genotype_file_names)]
+    # removing duplicate combinations
+    all_combinations = list(set(all_combinations))
+    # ensure the same results are always in the same order (makes comparing results later on easier):
+    all_combinations.sort()
+    with open(os.path.join(output_location,'Concordance.tsv'), 'w') as output:
+        output.write("sample1" + "\t" + "sample2" + "\t" + "concordance" +
+                     "\t" + "matches" + "\t" + "mismatches" + "\n")
+        for combination_str in all_combinations:
+            file_names = combination_str.split(",")
+            concordance_data = compare_two_genotypes(file_names[0], file_names[1],output_location)
+            output.write("\t".join(concordance_data) + "\n")
+
+
+def compare_two_genotypes(file_name1, file2_name2, output_location):
+    """
+    Compares exactly two samples. At each locus,
+    look at the concordance between both samples
+
+    This takes into account a set of 44 SNP sites and
+    what was the genotype at that locus.
+
+    Also outputs a side by side comparison report for detailed analysis
+    if needed,in addition to the concordance.txt report.
+
+    :param file_name1: e.g. 'sample1_same.genotypes' or full path if file is not local
+    :param file_name2: e.g. 'sample2_same.genotypes' or full path if file is not local
+    :return:
+    """
+    sample_one_dict = {}
+    sample_two_dict = {}
+    match_count = 0
+    mismatch_count = 0
+    with open(os.path.join(output_location,'Side_Comparison_Report.tsv'), 'a') as side_comparison_report:
+        side_comparison_report.write(
+         "\t".join(["locus_name_chr_pos",
+                    "Sample_X", "A_COUNT_X", "C_COUNT_X", "G_COUNT_X", "T_COUNT_X", "N_COUNT_X", "COVERAGE_X", "CALL_X",
+                    "Sample_Y", "A_COUNT_Y", "C_COUNT_Y", "G_COUNT_Y", "T_COUNT_Y", "N_COUNT_Y", "COVERAGE_Y", "CALL_Y",
+                    "CONCORDANCE"])
+        )
+        side_comparison_report.write("\n")
+        sample_one_data = pd.read_csv(file_name1, sep='\t', dtype=str, keep_default_na=False, na_values="").fillna('0').to_dict(orient="records")
+        sample_two_data = pd.read_csv(file2_name2, sep='\t', dtype=str, keep_default_na=False, na_values="").fillna('0').to_dict(orient="records")
+
+        first_sample_name = file_name1
+        second_sample_name = file2_name2
+        # get genotype column names (this column name will be different for each file!):
+        sample1_genotype_column_name, sample2_genotype_column_name = get_genotype_call_column_names_and_validate_header(file_name1,
+                                                                                                    file2_name2)
+        # skip locus where genotype column is empty:
+        for row in sample_one_data:
+            locusname = row['locus_name_chr_pos']
+            if row[sample1_genotype_column_name] is not None:
+                sample_one_dict[locusname] = row
+
+        for row in sample_two_data:
+            locusname = row['locus_name_chr_pos']
+            if row[sample2_genotype_column_name] is not None:
+                sample_two_dict[locusname] = row
+
+        sharedkeys = list(set(sample_one_dict.keys()).intersection(sample_two_dict.keys()))
+        # ensure the same results are always written in the same order (makes comparing results later on easier):
+        sharedkeys.sort()
+        for key in sharedkeys:
+            if sample_one_dict[key][sample1_genotype_column_name] == sample_two_dict[key][sample2_genotype_column_name]:
+                concordance_metadata_value = 'TRUE'
+                match_count += 1
             else:
-                likely_genotype = likely_genotype+each_base
-    return likely_genotype
+                concordance_metadata_value = 'FALSE'
+                mismatch_count += 1
+
+            side_comparison_report_string = key, first_sample_name, \
+                sample_one_dict[key]['A_COUNT'], \
+                sample_one_dict[key]['C_COUNT'], \
+                sample_one_dict[key]['G_COUNT'], \
+                sample_one_dict[key]['T_COUNT'], \
+                sample_one_dict[key]['N_COUNT'], \
+                sample_one_dict[key]['COVERAGE'], \
+                sample_one_dict[key][sample1_genotype_column_name], \
+                second_sample_name, \
+                sample_two_dict[key]['A_COUNT'], \
+                sample_two_dict[key]['C_COUNT'], \
+                sample_two_dict[key]['G_COUNT'], \
+                sample_two_dict[key]['T_COUNT'], \
+                sample_two_dict[key]['N_COUNT'], \
+                sample_two_dict[key]['COVERAGE'], \
+                sample_two_dict[key][sample2_genotype_column_name], concordance_metadata_value
+            side_comparison_report.write("\t".join(side_comparison_report_string) + "\n")
+
+        if match_count >= CONCORDANT_THRESHOLD:
+            concordance = "Concordant"
+        elif INDETERMINATE_THRESHOLD_MIN < match_count < INDETERMINATE_THRESHOLD_MAX:
+            concordance = "Indeterminate"
+        else:
+            concordance = "Discordant"
+    return first_sample_name, second_sample_name, concordance, str(match_count), str(mismatch_count)
 
 
 def main():
-    """
-    Input: Args with input files and cut off scores
-    :return: Output file with genotypes
+    """Input: Args with input files
+
+    Call main functions to compare genotypes
+
     """
     log_level = logging.INFO
-    log_file = "logging_genotypingFromPileup.txt"
-    init_logger(log_level, log_file)
-
-    inputfile, intervalfile , args = parse_input_args(sys.argv[1:])
-    logging.info('Input pileup: %s' % inputfile)
-    # Check if inputfile exists
-    if not os.path.exists(inputfile):
-        msg = "Input file %s does not exist" % inputfile
-        logging.error(msg)
-        raise Exception(msg)
-
-    logging.info("Reading input files...")
-    count_lines=0
-    interval_dict = {}
+    init_logger(log_level)
+    args = parse_input_args(sys.argv[1:])
+    list_of_genotype_file_names = args.input
+    output_location = args.output
+    logging.info('List of genotype file names to compare: %s' % list_of_genotype_file_names)
     try:
-        with open(intervalfile, 'rt') as g:
-            for line in g :
-                if line[0].isdigit():
-                    split_line = line.split("\t")
-                    chr= split_line[0]
-                    position1 = split_line[1]
-                    position2 = split_line[2] # Do we need this?
-                    locus_name = split_line[4].strip()
-                    interval_dict [chr+"_"+position1] = locus_name
-        logging.info("Done processing interval file")
-        print (interval_dict.items())
+        logging.info("Reading input files...")
+        process_data(list_of_genotype_file_names, output_location)
     except Exception as e:
         logging.error("Program failed due to unexpected error!")
-        # halt the program when an exception exists
-        raise Exception(e)
-
-    list_of_counts={}
-    try:
-        #Open with read-text mode
-        with open(inputfile, 'rt') as f:
-                for line in f:
-                    count_lines += 1
-                    line = line.strip()
-                    split_line = line.split()
-                    #Extracting the counts of alleles
-                    chr_position = split_line[0]+"_"+split_line[1]
-                    alle_string = split_line[3]
-                    a_count = alle_string.count('A')
-                    list_of_counts['A'] = a_count
-                    t_count = alle_string.count('T')
-                    list_of_counts['T'] = t_count
-                    g_count = alle_string.count('G')
-                    list_of_counts['G'] = g_count
-                    c_count = alle_string.count('C')
-                    list_of_counts['C'] = c_count
-                    coverage=a_count+t_count+g_count+c_count
-                    #Compare the position and extract the locus name from the interval file
-                    likely_genotype = calculate_likely_genotype(coverage,list_of_counts)
-                    for k,v in interval_dict.items():
-                        if k == chr_position:
-                            locus_chr_pos= v+"_"+chr_position
-                    #@todo: Write these to a file 
-                    print (locus_chr_pos+","+str(a_count)+",",str(t_count)+","+str(g_count)+",",str(c_count)+","+str(coverage)+","+str(likely_genotype))
-                logging.info("Done processing %d lines" % count_lines)
-    except Exception as e:
-        logging.error("Program failed due to unexpected error!")
-        # halt the program when an exception exists
         raise Exception(e)
 
 
